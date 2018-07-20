@@ -135,7 +135,7 @@ class DNN_Net:
         
         return prediction
         
-    def get_std_mean_ens(self, forward_model, create_sub_samples, X, n_ens, rec_len, A, nx, sig_pri, prior_cov = 'Gaussian', save_data = False):
+    def get_std_mean_ens(self, create_sub_samples_test, X, n_ens, rec_len, A, nx, sig_pri, prior_cov = 'Gaussian', save_data = False):
         
         """
         Function for making prediction with DNN and also for providing estimation uncertainty
@@ -149,11 +149,12 @@ class DNN_Net:
         
         """
 
-        np.random.seed(100)
-        ref_bathy = X
-        ref_bathy[ref_bathy<0.01] = 0.01
-        ref_bathy = ref_bathy.reshape(-1,1)
-        obs_vel_org = forward_model(ref_bathy, parallel=False)
+        #np.random.seed(100)
+        #ref_bathy = X
+        #ref_bathy[ref_bathy<0.01] = 0.01
+        #ref_bathy = ref_bathy.reshape(-1,1)
+        #obs_vel_org = forward_model(ref_bathy, parallel=False)
+        obs_vel_org = X
         N = (nx[0]-rec_len/2-1)*(nx[1]-rec_len/2-1)
         Y = np.zeros((N, n_ens))
         for i in range(n_ens):
@@ -163,7 +164,7 @@ class DNN_Net:
                 obs_vel = obs_vel_org +np.dot(A,np.random.randn(110*83,1))*sig_pri 
             else:
                 raise NotImplementedError
-            X_test,_ = create_sub_samples(obs_vel,ref_bathy, rec_len, nx)
+            X_test= create_sub_samples_test(obs_vel, rec_len, nx)
             y_pred = self.predict(X_test.T)
             Y[:,i] = y_pred.squeeze()
 
