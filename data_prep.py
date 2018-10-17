@@ -1,11 +1,10 @@
 import numpy as np
-import matplotlib.pyplot as plt
-plt.switch_backend('agg')
 import matplotlib
-from matplotlib.ticker import ScalarFormatter, FormatStrFormatter
-from scipy.io import savemat, loadmat
+from scipy.io import loadmat
 from sklearn.model_selection import train_test_split
 from scipy.linalg import svd
+import matplotlib.pyplot as plt
+plt.switch_backend('agg')
 
 
 class river_data_prep:
@@ -27,6 +26,18 @@ class river_data_prep:
                 raise ValueError('river profile array should be 2D')
         else:
             raise ValueError('')
+        if 'prof_vel_test' in params:
+            self.prof_vel_test = params['prof_vel_test']
+            if self.prof_vel.ndim != 2:
+                raise ValueError('velocity array should be 2D')
+        else:
+            self.prof_vel_test = None
+        if 'prof_dep_test' in params:
+            self.prof_dep_test = params['prof_dep_test']
+            if self.prof_dep_test.ndim != 2:
+                raise ValueError('river profile array should be 2D')
+        else:
+            self.prof_dep_test = None
         if 'n_edge' in params:
             self.n_edge = params['n_edge']
         else:
@@ -89,6 +100,8 @@ class river_data_prep:
                 self.size_dom = params['size_dom']
             else:
                 raise ValueError('size_dom')
+            Q = self.generate_Q(self.xmin, self.dx, self.size_dom, self.len_scale, self.kernel)
+            self.u = self.generate_basis(Q, self.n_pc)
 
     def create_sub_samples(self, prof_vel, prof_dep, rec_len, nx):
 
@@ -186,7 +199,6 @@ class river_data_prep:
         X:                  2D numpy array of size (rec_len**2, N) containing the wave celerity (inputs of DNN)
         y:                  1D numpy array of size (N, ) containing the bathymetry values (outputs of DNN)
         """
-
         n_prof = prof_vel.shape[1]
         n_sample_per_prof_tr = (sep_point-rec_len+1)
         n_sample_per_prof_test = (nx[0]-sep_point-rec_len+1)
@@ -312,7 +324,7 @@ class river_data_prep:
 
     def generate_X_Y(self, mag_vel, riv_prof, mag_vel_red, prof_red_riv, n_edge, nx, test_size):
         X_tr_mag, Y_tr = self.create_sub_samples(mag_vel, riv_prof, n_edge, nx)
-        X_train, X_test, y_train, y_test = train_test_split(np.sqrt(X_tr_mag.T), Y_tr, test_size=0.1, random_state=101)
+        X_train, _, y_train, _ = train_test_split(np.sqrt(X_tr_mag.T), Y_tr, test_size=0.1, random_state=101)
         np.random.seed(100)
         ord_shuffle = np.arange(X_train.shape[0])
         np.random.shuffle(ord_shuffle)
@@ -457,6 +469,54 @@ class river_data_prep:
 
         return np.dot(u.T, vec)
 
+    def create_sub_samples_pc_Tr_Test(self, prof_vel, prof_dep, rec_len_dep, rec_len_vel, nx, u):
+
+        """
+        This function will get the wave celerity and bathymetry values for the whole domain and generates
+        a two dimentional numpy arrays X and a 1D numpy array y. The i'th column of X contains
+        the wave celerity values in a square with length 'rec_len' around the i'th grid point.
+        The y(i) contains the bathymetry value corresponding to i'th grid point.
+
+        inputs:
+
+        @ prof_vel:         a 2D numpy array containg the wave celerity for the domain
+        @ prof_dep:         a 2D numpy array containg the depth for the domain
+        @ rec_len:          The length of the square around each grid point for measuring wave celerity.
+                            rec_len should be an odd integer
+        @ nx                a list containing the length of domain in the x and y directions.
+
+        outputs:
+        X:                  2D numpy array of size (rec_len**2, N) containing the wave celerity (inputs of DNN)
+        y:                  1D numpy array of size (N, ) containing the bathymetry values (outputs of DNN)
+        """
+        n_prof = prof_vel.shape[1]
+        n_sample_per_prof_tr = (self.sep_point-rec_len_vel+1)
+        n_sample_per_prof_test = (nx[0]-self.sep_point-rec_len_vel+1)
+        n_sample_tr = n_prof*n_sample_per_prof_tr
+        n_sample_test = n_prof*n_sample_per_prof_test
+        X_tr = np.zeros((rec_len_vel*nx[1], n_sample_tr))
+        X_test = np.zeros((rec_len_vel*nx[1], n_sample_test))
+        # print(X.shape)
+        y_tr = np.zeros((u.shape[1], n_sample_tr))
+        y_test = np.zeros((u.shape[1], n_sample_test))
+        kk = 0
+        jj = 0
+        for i in range(n_prof):
+            dom_vel = np.reshape(prof_vel[:, i], (nx[1], nx[0]))
+            dom = np.reshape(prof_dep[:, i], (nx[1], nx[0]))
+            for k in range((rec_len_vel-1)//2, self.sep_point-((rec_len_vel-1)//2)):
+                X_tr[:, kk] = dom_vel[:, k-(rec_len_vel-1)//2:k+(rec_len_vel-1)//2+1].ravel()
+                vel = dom[:, k-(rec_len_dep-1)//2:k+(rec_len_dep-1)//2+1].ravel()
+                y_tr[:, kk] = self.project_to_basis(vel, u)
+                kk += 1
+            for k in range(self.sep_point+(rec_len_vel-1)//2, nx[0]-((rec_len_vel-1)//2)):
+                X_test[:, jj] = dom_vel[:, k-(rec_len_vel-1)//2:k+(rec_len_vel-1)//2+1].ravel()
+                vel = dom[:, k-(rec_len_dep-1)//2:k+(rec_len_dep-1)//2+1].ravel()
+                y_test[:, jj] = self.project_to_basis(vel, u)
+                jj += 1
+
+        return X_tr, y_tr, X_test, y_test
+
     def create_sub_samples_pc(self, prof_vel, prof_dep, rec_len_dep, rec_len_vel, nx, u):
 
         """
@@ -498,26 +558,48 @@ class river_data_prep:
 
     def Gen_train_data(self):
 
-        vel_x, vel_y, vel_mag = self.xy_vel_sep(self.prof_vel)
-        if self.mirror:
-            self.prof_vel, self.prof_dep = self.replicate_pr(vel_mag, self.prof_dep)
-        else:
-            self.prof_vel = vel_mag
+        X, Y = self.Gen_data(self.prof_vel, self.prof_dep, mirror=self.mirror,
+                             shuffle=self.shuffle, divide_domain=self.divide_domain)
+        return X, Y
 
+    def gen_test_data(self, vel=None, dep=None, gen_riv_prof=True, noise=None):
+
+        if vel is None:
+            raise ValueError('velocity profile is not given.')
+        if dep is None:
+            raise ValueError('river profile is not given.')
+        vel = vel.reshape(-1, 1)
+        dep = dep.reshape(-1, 1)
+        X, Y = self.Gen_data(vel, dep, noise)
+
+        return X, Y
+
+    def Gen_data(self, prof_vel_in, prof_dep_in, noise=None, mirror=False, shuffle=False, divide_domain=False):
+
+        _, _, vel_mag = self.xy_vel_sep(prof_vel_in)
+        if mirror:
+            prof_vel, prof_dep = self.replicate_pr(vel_mag, prof_dep_in)
+        else:
+            prof_vel = vel_mag
+            prof_dep = prof_dep_in
+        if noise is not None:
+            prof_vel = prof_vel + noise.reshape(prof_vel.shape)
         if self.pca:
-            Q = self.generate_Q(self.xmin, self.dx, self.size_dom, self.len_scale, self.kernel)
-            u = self.generate_basis(Q, self.n_pc)
-            X_tr, Y_tr = self.create_sub_samples_pc(self.prof_vel, self.prof_dep, self.n_edge, self.n_edge, self.nx, u)
+            if divide_domain:
+                X_tr, Y_tr, _, _ = self.create_sub_samples_pc_Tr_Test(prof_vel, prof_dep, self.n_edge,
+                                                                      self.n_edge, self.nx, self.u)
+            else:
+                X_tr, Y_tr = self.create_sub_samples_pc(prof_vel, prof_dep, self.n_edge, self.n_edge, self.nx, self.u)
         elif self.n_edge_out > 1:
-            X_tr, Y_tr = self.create_sub_samples_CNN2(self.prof_vel, self.prof_dep,
+            X_tr, Y_tr = self.create_sub_samples_CNN2(prof_vel, prof_dep,
                                                       self.n_edge, self.nx, self.n_edge_out)
-        elif self.divide_domain:
-            X_tr, Y_tr, _, _ = self.create_sub_samples_CNN_Tr_Test(self.prof_vel,
-                                                                   self.prof_dep, self.n_edge, self.nx, self.sep_point)
+        elif divide_domain:
+            X_tr, Y_tr, _, _ = self.create_sub_samples_CNN_Tr_Test(prof_vel,
+                                                                   prof_dep, self.n_edge, self.nx, self.sep_point)
         else:
-            X_tr, Y_tr = self.create_sub_samples(self.prof_dep, self.prof_dep, self.n_edge, self.nx)
+            X_tr, Y_tr = self.create_sub_samples(prof_vel, prof_dep, self.n_edge, self.nx)
 
-        if self.shuffle:
+        if shuffle:
             np.random.seed(self.seed_num)
             ord_shuffle = np.arange(X_tr.shape[1])
             np.random.shuffle(ord_shuffle)
@@ -535,3 +617,34 @@ class river_data_prep:
 
         a[:, self.n_edge: self.nx[0]-self.n_edge] = a[:, self.n_edge: self.nx[0]-self.n_edge]/self.n_edge
         return a
+
+    def generate_realization(self, A, n_ens, std):
+        noise = np.dot(A.T, np.random.randn(A.shape[1], n_ens))*std
+        return noise
+
+    def plot_1d(self, ref_prof, pred_prof, est_std=None, x=None, y=None, file_name=None, plt_show=False):
+
+        a = .3*ref_prof.reshape(self.nx[1], self.nx[0])
+        b = .3*pred_prof.reshape(self.nx[1], self.nx[0])
+        if est_std is not None:
+            c = .3*est_std.reshape(self.nx[1], self.nx[0])
+        if x is not None:
+            plt.plot(a[:, x])
+            plt.hold(True)
+            plt.plot(b[:, x])
+            if est_std is not None:
+                plt.plot(b[:, x]+2*c[:, x], 'k-.')
+                plt.plot(b[:, x]-2*c[:, x], 'k-.')
+        elif y is not None:
+            plt.plot(a[y, :])
+            plt.hold(True)
+            plt.plot(b[y, :])
+            if est_std is not None:
+                plt.plot(b[y, :]+2*c[y, :], 'k-.')
+                plt.plot(b[y, :]-2*c[y, :], 'k-.')
+        else:
+            raise ValueError('please give x or y coordinates')
+        if file_name:
+            plt.savefig(file_name)
+        if plt_show:
+            plt.show()
